@@ -12,10 +12,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 
 # 1. 대시보드 기본 페이지 레이아웃 세팅
-st.set_page_config(page_title="실시간 개표 자동 백업 시스템", page_icon="📊", layout="wide")
+st.set_page_config(page_title="실시간 개표 표차 추적", page_icon="📊", layout="wide")
 
-st.title("📊 깃허브 자동 백업 실시간 개표 대시보드")
-st.caption("60초마다 선관위 데이터를 추적하며, 데이터 변동 시 코드가 직접 GitHub 저장소의 CSV 파일을 실시간 업데이트(Push)합니다.")
+st.title("📊 실시간 개표 변동 추이 대시보드")
+st.caption("Streamlit Community Cloud 환경에서 60초마다 선관위 데이터를 추적해 변동이 생긴 순간 그래프와 로그 테이블에 누적합니다.")
 
 # ⏱️ 데이터 추적 주기 및 저장 파일 설정
 FETCH_INTERVAL = 60
