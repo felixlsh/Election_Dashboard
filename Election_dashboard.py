@@ -3,23 +3,24 @@ import time
 import os
 import pandas as pd
 import altair as alt
+from datetime import datetime, timedelta, timezone
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 
-# 1. 페이지 레이아웃 세팅
+# 1. 페이지 레이아웃 및 환경 설정
 st.set_page_config(page_title="실시간 개표 표차 추적", page_icon="📊", layout="wide")
 
 st.title("📊 파일 연동 실시간 개표 대시보드")
-st.caption("새로고침을 하더라도 로그 파일에서 데이터를 역추적해 그래프와 히스토리를 완벽히 복원합니다.")
+st.caption("한국 표준시(KST)를 기준으로 가동되며, 새로고침을 하더라도 로그 파일에서 전개 추이를 완벽히 복원합니다.")
 
-# ⏱️ 새로고침 주기 (60초 = 1분)
+# ⏱️ 실시간 데이터 동기화 주기 (60초 = 1분)
 FETCH_INTERVAL = 60
 LOG_FILE = "election_gap_data.csv"
 
-# 2. [로그 파일 복원 엔진] 에러 발생 시 숨기지 않고 출력하도록 개선
+# 2. [로그 파일 복원 엔진] 파일이 있으면 데이터를 판다스로 빌드합니다.
 if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
     try:
         df_history = pd.read_csv(LOG_FILE, encoding='utf-8')
@@ -28,14 +29,13 @@ if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
         df_history['국민의힘 오세훈'] = pd.to_numeric(df_history['국민의힘 오세훈']).astype(int)
         df_history['표차'] = pd.to_numeric(df_history['표차']).astype(int)
     except Exception as e:
-        # 어디서 파일 에러가 났는지 브라우저 화면에 직접 띄워 추적을 돕습니다.
-        st.error(f"⚠️ 기존 로그 파일 로드 중 오류 발생: {e}")
-        st.warning("로그 파일 내부 서식이 고르지 않습니다. 아래 시스템이 수집 즉시 정정 및 자동 복구를 시도합니다.")
+        st.error(f"⚠️ 기존 로그 파일 읽기 실패: {e}")
+        st.warning("로그 파싱에 일시적인 벽이 생겼습니다. 시스템이 수집 즉시 정정 처리를 진행합니다.")
         df_history = pd.DataFrame(columns=['시간', '더불어민주당 합계', '국민의힘 오세훈', '표차', '우세정당', '변동폭'])
 else:
     df_history = pd.DataFrame(columns=['시간', '더불어민주당 합계', '국민의힘 오세훈', '표차', '우세정당', '변동폭'])
 
-# 셀레니움 크롤링 (클라우드/로컬 공용 최적화)
+# 선관위 데이터 수집용 크롤러 (Headless 최적화)
 def fetch_current_votes():
     options = webdriver.ChromeOptions()
     options.add_argument('--headless=new')  
@@ -90,8 +90,8 @@ def fetch_current_votes():
         driver.quit()
     return None, None
 
-# 실시간 크롤링 수행
-with st.spinner("선관위 서버 동기화 및 텍스트 파일 데이터 대조 중..."):
+# 실시간 스크래핑 작동
+with st.spinner("선관위 메인 네트워크 서버 동기화 중..."):
     v_a, v_b = fetch_current_votes()
 
 live_delta = "최초 측정"
@@ -107,9 +107,13 @@ if v_a and v_b:
     else:
         party_leader = "동률"
         
-    current_time = time.strftime('%H:%M:%S')
+    # 🛠️ [타임존 패치] 해외 클라우드 서버에서도 무조건 한국시(KST)로 강제 지정합니다.
+    KST = timezone(timedelta(hours=9))
+    current_time = datetime.now(KST).strftime('%H:%M:%S')
+    
     should_accumulate = False
     
+    # 변동 데이터 검증 진행
     if len(df_history) == 0:
         live_delta = "최초 측정"
         should_accumulate = True
@@ -131,7 +135,7 @@ if v_a and v_b:
                 live_delta = "0 표 (변동없음)"
                 should_accumulate = False
 
-    # 3. [🔥 핵심 변경] mode='a'를 폐기하고, 병합 후 파일 전체를 새로 고쳐 쓰는 완전 안전한 방식으로 수정
+    # 🛠️ [방탄 패치] 파일 오염을 방지하기 위해 정제된 프레임 전체를 '완전 덮어쓰기' 합니다.
     if should_accumulate:
         new_row = pd.DataFrame([{
             '시간': current_time,
@@ -142,12 +146,11 @@ if v_a and v_b:
             '변동폭': live_delta
         }])
         
-        # 메모리 위에서 깔끔하게 결합을 끝낸 뒤
         df_history = pd.concat([df_history, new_row], ignore_index=True)
-        # 규격화된 파일 서식으로 매번 완전히 깔끔하게 덮어써서 줄바꿈 깨짐을 원천 봉쇄합니다.
+        # 인덱스 없이 깔끔한 CSV 표준 형태로 매번 파일을 완벽하게 밀어 써서 서식을 강제 고정합니다.
         df_history.to_csv(LOG_FILE, index=False, encoding='utf-8')
 
-# 4. 화면 UI 출력 (상단 매트릭스 지표)
+# 3. 최상단 실시간 개표 현황판 (Metric)
 if v_a and v_b:
     col1, col2, col3 = st.columns(3)
     col1.metric(label="🔹 더불어민주당 후보 합계", value=f"{v_a:,} 표")
@@ -155,9 +158,9 @@ if v_a and v_b:
     col3.metric(label=f"⚡ 현재 표차 ({party_leader} 리드)", value=f"{current_gap:,} 표", delta=live_delta)
     st.divider()
 
-# 5. 시각화 렌더링 영역
+# 4. 시각화 및 데이터 브라우징 엔진
 if not df_history.empty:
-    st.subheader("📊 누적 표차 추이 그래프 (정당 고유 색상 배치)")
+    st.subheader("📊 누적 표차 추이 그래프 (정당 고유 색상 매핑)")
     
     color_chart = alt.Chart(df_history).mark_bar(opacity=0.85, size=25).encode(
         x=alt.X('시간:N', title='조회 시간', sort=None),
@@ -177,10 +180,12 @@ if not df_history.empty:
         ]
     ).properties(height=400)
     
+    # 🛠️ [2026 문법 규격 선언] 가로 가득 채우기 속성을 width='stretch'로 통일했습니다.
     st.altair_chart(color_chart, width='stretch')
     
-    st.subheader(f"📋 전체 누적 개표 로그 기록 (총 {len(df_history)}개 변동 시점 저장됨)")
+    st.subheader(f"📋 전체 누적 개표 로그 기록 (총 {len(df_history)}개 변동 분기점 백업 완료)")
     
+    # 테이블 출력 가독성을 위해 최신순 정렬 및 천 단위 컴마 주입
     df_display = df_history[::-1].copy()
     formatted_df = df_display.style.format({
         '더불어민주당 합계': '{:,}',
@@ -188,9 +193,10 @@ if not df_history.empty:
         '표차': '{:,}'
     })
     
+    # 🛠️ [2026 문법 규격 선언] 데이터프레임 가로폭 확장 규칙도 최신 스펙을 적용했습니다.
     st.dataframe(formatted_df, width='stretch', hide_index=True)
 else:
-    st.info("개표 로그 파일이 비어있거나 생성 중입니다.")
+    st.info("개표 로그 데이터가 비어있습니다. 선관위 변동이 수집되는 순간 타임라인이 시작됩니다.")
 
 st.write(f"🔄 **{FETCH_INTERVAL}초** 후 대시보드가 자동으로 업데이트됩니다.")
 time.sleep(FETCH_INTERVAL)
