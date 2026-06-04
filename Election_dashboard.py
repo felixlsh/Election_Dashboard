@@ -68,10 +68,10 @@ if not df_history.empty:
         ]
     )
     
-    # 역전이 발생한 데이터 포인트 위에 경고등 켜기
-    turnaround_annotation = alt.Chart(df_history).filter(
-        alt.datum.변동폭 == '🔄 역전 발생!'
-    ).mark_text(
+    # 🛠️ [버그 수정 완료] 판다스에서 역전 데이터만 안전하게 필터링한 뒤 Altair에 전달합니다.
+    df_turnaround = df_history[df_history['변동폭'] == '🔄 역전 발생!']
+    
+    turnaround_annotation = alt.Chart(df_turnaround).mark_text(
         text='🚨 골든크로스 역전',
         dy=-15,
         fontSize=12,
