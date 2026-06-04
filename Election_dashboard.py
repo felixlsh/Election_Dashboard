@@ -7,7 +7,7 @@ import altair as alt
 st.set_page_config(page_title="선거 개표 최종 분석 결과", page_icon="📊", layout="wide")
 
 st.title("📊 실시간 개표 변동 추이 대시보드")
-st.caption("""Streamlit Community Cloud 환경에서 60초마다 선관위 데이터를 추적해 변동이 생긴 순간 그래프와 로그 테이블에 누적합니다. 
+st.caption("""Streamlit Community Cloud 환경에서 60초마다 선관위 데이터를 추적해 변동이 생긴 순간 그래프와 로그 테이블에 누적합니다.   
            개표가 완료됨에 따라 실시간 자동 추적을 종료하고, 축적된 데이터를 바탕으로 한 정적 분석 모드로 가동 중입니다.""")
 
 LOG_FILE = "election_gap_data.csv"
