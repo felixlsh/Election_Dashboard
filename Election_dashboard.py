@@ -3,6 +3,7 @@ import time
 import os
 import pandas as pd
 import altair as alt
+import re
 from datetime import datetime, timedelta, timezone
 from github import Github
 from selenium import webdriver
@@ -12,16 +13,16 @@ from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 
 # 1. 대시보드 기본 페이지 레이아웃 세팅
-st.set_page_config(page_title="실시간 개표 표차 추적", page_icon="📊", layout="wide")
+st.set_page_config(page_title="실시간 개표 추적 시스템", page_icon="📊", layout="wide")
 
-st.title("📊 실시간 개표 변동 추이 대시보드")
-st.caption("Streamlit Community Cloud 환경에서 60초마다 선관위 데이터를 추적해 변동이 생긴 순간 그래프와 로그 테이블에 누적합니다.")
+st.title("📊 깃허브 연동 실시간 개표 방송 대시보드")
+st.caption("대시보드가 60초마다 선관위 데이터를 추적하며, 역전 발생 시각화 및 정당별 로그 음영 레이아웃이 적용되어 있습니다.")
 
 # ⏱️ 데이터 추적 주기 및 저장 파일 설정
 FETCH_INTERVAL = 60
 LOG_FILE = "election_gap_data.csv"
 
-# 2. [로그 파일 복원 엔진] 켜지자마자 저장된 CSV가 있다면 판다스로 로드
+# 2. [로그 파일 복원 엔진] 기존 데이터 로드 및 신규 컬럼 대응 보정
 if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
     try:
         df_history = pd.read_csv(LOG_FILE, encoding='utf-8')
@@ -29,25 +30,25 @@ if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
         df_history['더불어민주당 합계'] = pd.to_numeric(df_history['더불어민주당 합계']).astype(int)
         df_history['국민의힘 오세훈'] = pd.to_numeric(df_history['국민의힘 오세훈']).astype(int)
         df_history['표차'] = pd.to_numeric(df_history['표차']).astype(int)
+        # 하위 호환성 패치: 기존 파일에 개표율 컬럼이 없으면 자동 생성
+        if '개표율' not in df_history.columns:
+            df_history['개표율'] = '-'
     except Exception as e:
         st.error(f"⚠️ 로그 파일 로드 실패: {e}")
-        df_history = pd.DataFrame(columns=['시간', '더불어민주당 합계', '국민의힘 오세훈', '표차', '우세정당', '변동폭'])
+        df_history = pd.DataFrame(columns=['시간', '더불어민주당 합계', '국민의힘 오세훈', '표차', '우세정당', '변동폭', '개표율'])
 else:
-    df_history = pd.DataFrame(columns=['시간', '더불어민주당 합계', '국민의힘 오세훈', '표차', '우세정당', '변동폭'])
+    df_history = pd.DataFrame(columns=['시간', '더불어민주당 합계', '국민의힘 오세훈', '표차', '우세정당', '변동폭', '개표율'])
 
-# 🤖 [핵심] 클라우드 서버가 직접 내 깃허브 저장소로 자동 커밋&푸시를 쏘는 함수
+# 🤖 클라우드 서버 전용 깃허브 원격 자동 푸시 함수
 def auto_git_push(df):
     try:
-        # Streamlit Secrets에 저장해 둔 토큰 및 레포지토리 정보 호출
         github_secrets = st.secrets["github.com"] if "github.com" in st.secrets else st.secrets["github"]
         token = github_secrets["token"]
         repo_name = github_secrets["repo"]
         
-        # PyGithub을 통한 원격 서버 제어권 획득
         g = Github(token)
         repo = g.get_repo(repo_name)
         
-        # 깃허브 원격지에 이미 올라가 있는 파일의 고유 식별자(SHA) 획득
         try:
             contents = repo.get_contents(LOG_FILE)
             sha = contents.sha
@@ -56,17 +57,15 @@ def auto_git_push(df):
             sha = None
             path = LOG_FILE
             
-        # 메모리상의 최신 데이터프레임을 깨끗한 CSV 텍스트 스트링으로 가공
         csv_text = df.to_csv(index=False, encoding='utf-8')
         
-        # 원격 저장소 파일 덮어쓰기 명령 (Push 일임)
         if sha:
             repo.update_file(
                 path=path,
-                message=f"sys: {df.iloc[-1]['시간']} 개표 변동 발생 - 원격 클라우드 자동 동기화 완료",
+                message=f"sys: {df.iloc[-1]['시간']} 개표율 {df.iloc[-1]['개표율']} 변동 자동 업데이트",
                 content=csv_text,
                 sha=sha,
-                branch="main" # 내 메인 브랜치명이 master라면 master로 수정
+                branch="main"
             )
         else:
             repo.create_file(
@@ -76,9 +75,9 @@ def auto_git_push(df):
                 branch="main"
             )
     except Exception as e:
-        st.warning(f"⚠️ 깃허브 원격 자동 저장 지연 (대시보드는 정상 가동 중): {e}")
+        st.warning(f"⚠️ 깃허브 자동 백업 지연 (화면은 정상 가동 중): {e}")
 
-# 선관위 크롤러 가동 엔진 (Headless 브라우저)
+# 선관위 크롤러 가동 엔진 (득표수 및 개표율 동시 스크래핑)
 def fetch_current_votes():
     options = webdriver.ChromeOptions()
     options.add_argument('--headless=new')  
@@ -92,7 +91,7 @@ def fetch_current_votes():
         driver = webdriver.Chrome(options=options)
     except Exception as e:
         st.error(f"❌ 크롬 드라이버 초기화 실패: {e}")
-        return None, None
+        return None, None, "0.0%"
     
     try:
         url = "https://info.nec.go.kr/main/showDocument.xhtml?electionId=0020260603&topMenuId=VC&secondMenuId=VCCP09"
@@ -116,6 +115,16 @@ def fetch_current_votes():
         html = driver.page_source
         soup = BeautifulSoup(html, 'html.parser')
         
+        # ⏳ [개표율 추출] 페이지 내부에서 개표율 정보 레이블 서칭
+        counting_rate = "0.0%"
+        for element in soup.find_all(['div', 'p', 'span', 'td', 'h4', 'th']):
+            text = element.get_text(strip=True)
+            if "개표율" in text and ":" in text:
+                match = re.search(r'개표율\s*:\s*([0-9.]+\s*%)', text)
+                if match:
+                    counting_rate = match.group(1).replace(" ", "")
+                    break
+        
         target_row = None
         for row in soup.find_all('tr'):
             cells = row.find_all(['td', 'th'])
@@ -126,16 +135,16 @@ def fetch_current_votes():
         if target_row:
             votes_a = int(target_row[3].get_text(strip=True).replace(',', ''))
             votes_b = int(target_row[4].get_text(strip=True).replace(',', ''))
-            return votes_a, votes_b
+            return votes_a, votes_b, counting_rate
     except Exception as e:
-        st.error(f"⚠️ 선관위 파싱 에러: {e}")
+        st.error(f"⚠️ 선관위 데이터 파싱 에러: {e}")
     finally:
         driver.quit()
-    return None, None
+    return None, None, "0.0%"
 
-# 실시간 크롤링 수행
-with st.spinner("선관위 메인 전산망과 연동 제어 중..."):
-    v_a, v_b = fetch_current_votes()
+# 실시간 스크래핑 제어부
+with st.spinner("선관위 중앙 데이터베이스 동기화 중..."):
+    v_a, v_b, c_rate = fetch_current_votes()
 
 live_delta = "최초 측정"
 party_leader = ""
@@ -150,7 +159,6 @@ if v_a and v_b:
     else:
         party_leader = "동률"
         
-    # 🛠️ 타임존 패치: 해외 클라우드 서버 시간 대신 무조건 대한민국 표준시(KST) 인화
     KST = timezone(timedelta(hours=9))
     current_time = datetime.now(KST).strftime('%H:%M:%S')
     
@@ -177,7 +185,6 @@ if v_a and v_b:
                 live_delta = "0 표 (변동없음)"
                 should_accumulate = False
 
-    # 변동 탐지 시 로컬 저장 및 원격 깃허브 동시 덮어쓰기 백업 발동
     if should_accumulate:
         new_row = pd.DataFrame([{
             '시간': current_time,
@@ -185,60 +192,93 @@ if v_a and v_b:
             '국민의힘 오세훈': int(v_b),
             '표차': int(current_gap),
             '우세정당': party_leader,
-            '변동폭': live_delta
+            '변동폭': live_delta,
+            '개표율': c_rate
         }])
         
         df_history = pd.concat([df_history, new_row], ignore_index=True)
-        # 1. 임시 서버 로컬 디스크 안정 백업
         df_history.to_csv(LOG_FILE, index=False, encoding='utf-8')
-        # 2. 내 깃허브 저장소로 원격 커밋 및 푸시 자동 대행
         auto_git_push(df_history)
 
-# 3. 상단 킬러 메트릭스 렌더링
+# 3. 상단 4열 실시간 지표 보드 (Metric)
 if v_a and v_b:
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric(label="🔹 더불어민주당 후보 합계", value=f"{v_a:,} 표")
     col2.metric(label="🔸 국민의힘 오세훈 후보", value=f"{v_b:,} 표")
     col3.metric(label=f"⚡ 현재 표차 ({party_leader} 리드)", value=f"{current_gap:,} 표", delta=live_delta)
+    col4.metric(label="⏳ 선관위 공식 개표율", value=c_rate)
     st.divider()
 
-# 4. 차트 및 데이터 테이블 드로잉 (2026 규격 준수)
+# 4. 차트 레이어링 시각화 (역전 순간 포인트 하이라이트)
 if not df_history.empty:
-    st.subheader("📊 누적 표차 추이 그래프 (정당 고유 색상 매핑)")
+    st.subheader("📊 누적 표차 추이 그래프 (역전 시점 추적 뱃지 탑재)")
     
-    color_chart = alt.Chart(df_history).mark_bar(opacity=0.85, size=25).encode(
+    # 베이스 막대 차트
+    base_bar = alt.Chart(df_history).mark_bar(opacity=0.8, size=22).encode(
         x=alt.X('시간:N', title='조회 시간', sort=None),
-        y=alt.Y('표차:Q', title='합계 표차 격차 (표)', axis=alt.Axis(format=',d')), 
+        y=alt.Y('표차:Q', title='정당별 표차 격차 (표)', axis=alt.Axis(format=',d')), 
         color=alt.Color('우세정당:N', title='선두 정당',
                         scale=alt.Scale(
                             domain=['더불어민주당', '국민의힘', '동률'],
                             range=['#2457A6', '#E61E2B', '#888888']
                         )),
         tooltip=[
-            alt.Tooltip('시간:N', title='조회 시간'),
-            alt.Tooltip('더불어민주당 합계:Q', format=',d', title='더불어민주당 합계 (표)'),
+            alt.Tooltip('시간:N', title='시간'),
+            alt.Tooltip('개표율:N', title='개표 진행률'),
+            alt.Tooltip('더불어민주당 합계:Q', format=',d', title='더불어민주당 (표)'),
             alt.Tooltip('국민의힘 오세훈:Q', format=',d', title='국민의힘 오세훈 (표)'),
             alt.Tooltip('표차:Q', format=',d', title='현재 격차 (표)'),
-            alt.Tooltip('우세정당:N', title='리드 정당'),
             alt.Tooltip('변동폭:N', title='직전대비 변동폭')
         ]
-    ).properties(height=400)
+    )
     
-    st.altair_chart(color_chart, width='stretch')
+    # 🌟 [디자인 보완] 역전이 발생한 데이터 포인트만 필터링하여 상단에 🚨 표식을 매핑하는 레이어
+    turnaround_annotation = alt.Chart(df_history).filter(
+        alt.datum.변동폭 == '🔄 역전 발생!'
+    ).mark_text(
+        text='🚨 골든크로스 역전',
+        dy=-15,
+        fontSize=12,
+        fontWeight='bold',
+        color='#9900cc'
+    ).encode(
+        x='시간:N',
+        y='표차:Q'
+    )
     
-    st.subheader(f"📋 전체 누적 개표 로그 기록 (총 {len(df_history)}개 변동 분기점 백업 완료)")
+    # 두 레이어를 병합하여 출력
+    final_chart = alt.layer(base_bar, turnaround_annotation).properties(height=400)
+    st.altair_chart(final_chart, width='stretch')
     
+    # 5. [디자인 보완] 판다스 스타일러를 이용한 테이블 커스텀 음영 주입
+    st.subheader(f"📋 전술 개표 누적 데이터 테이블 (총 {len(df_history)}개 분기점)")
+    
+    def apply_row_styles(row):
+        """ 행의 상태에 따라 배경색 음영을 다르게 제어하는 스타일 함수 """
+        if row['변동폭'] == '🔄 역전 발생!':
+            # 👑 역전 발생 순간: 황금색 테두리 효과 및 굵은 글씨
+            return ['background-color: #fff2cc; font-weight: bold; color: #7f6000; border: 1px solid #ffd966;'] * len(row)
+        elif row['우세정당'] == '더불어민주당':
+            # 민주당 우세: 파스텔 소프트 블루
+            return ['background-color: #f2f7ff; color: #1c3d73;'] * len(row)
+        elif row['우세정당'] == '국민의힘':
+            # 국민의힘 우세: 파스텔 소프트 레드
+            return ['background-color: #fff5f5; color: #8c2323;'] * len(row)
+        return [''] * len(row)
+
     df_display = df_history[::-1].copy()
-    formatted_df = df_display.style.format({
+    
+    # 스타일 함수 결합 및 천 단위 컴마 인쇄 결합
+    styled_table = df_display.style.apply(apply_row_styles, axis=1).format({
         '더불어민주당 합계': '{:,}',
         '국민의힘 오세훈': '{:,}',
         '표차': '{:,}'
     })
     
-    st.dataframe(formatted_df, width='stretch', hide_index=True)
+    st.dataframe(styled_table, width='stretch', hide_index=True)
 else:
     st.info("개표 로그 데이터를 연동 중입니다.")
 
-st.write(f"🔄 **{FETCH_INTERVAL}초** 후 대시보드가 자동으로 업데이트됩니다. (서버 리셋 프리)")
+st.write(f"🔄 **{FETCH_INTERVAL}초** 후 대시보드가 자동으로 업데이트됩니다.")
 time.sleep(FETCH_INTERVAL)
 st.rerun()
